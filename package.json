@@ -1,0 +1,21 @@
+{
+  "name": "openclaw-appstore",
+  "version": "1.0.0",
+  "description": "App Store for OpenClaw — browse and install plugins from GitHub with one click",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Soulz-io/Open-Claw-App-Store.git"
+  },
+  "openclaw": {
+    "extensions": ["./index.ts"]
+  },
+  "files": [
+    "index.ts",
+    "src/",
+    "ui/",
+    "registry.json",
+    "openclaw.plugin.json"
+  ]
+}

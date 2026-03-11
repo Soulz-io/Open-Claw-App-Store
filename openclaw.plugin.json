@@ -1,0 +1,31 @@
+{
+  "id": "openclaw-appstore",
+  "name": "App Store",
+  "description": "Browse and install OpenClaw plugins from GitHub with one click.",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "registryUrl": {
+        "type": "string",
+        "default": "https://cdn.jsdelivr.net/gh/Soulz-io/Open-Claw-App-Store@main/registry.json",
+        "description": "URL to the plugin registry JSON"
+      },
+      "cacheTtlMs": {
+        "type": "number",
+        "default": 1800000,
+        "description": "Cache TTL in milliseconds (default 30 minutes)"
+      }
+    }
+  },
+  "uiHints": {
+    "registryUrl": {
+      "label": "Registry URL",
+      "help": "URL to the plugin registry. Defaults to the official Soulz registry on jsDelivr CDN."
+    },
+    "cacheTtlMs": {
+      "label": "Cache TTL (ms)",
+      "help": "How long to cache registry and GitHub data before re-fetching."
+    }
+  }
+}
