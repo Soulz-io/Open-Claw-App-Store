@@ -28,72 +28,98 @@ export interface HttpHandlerParams {
 // ── Constants ─────────────────────────────────────────────────────
 
 const PREFIX = "/plugins/openclaw-appstore";
-const API_PREFIX = `${PREFIX}/api/`;
-
-const MIME_TYPES: Record<string, string> = {
-  ".html": "text/html; charset=utf-8",
-  ".js": "application/javascript; charset=utf-8",
-  ".css": "text/css; charset=utf-8",
-  ".json": "application/json; charset=utf-8",
-  ".svg": "image/svg+xml",
-  ".png": "image/png",
-  ".ico": "image/x-icon",
-};
 
 // ── Handler factory ───────────────────────────────────────────────
 
+/**
+ * Gateway only supports exact-path matching for plugin routes.
+ * This handler serves on the EXACT path `/plugins/openclaw-appstore`:
+ *   - No query params → self-contained HTML bundle (inline JS+CSS)
+ *   - ?_api=browse    → JSON browse response
+ *   - ?_api=install   → JSON install response (POST)
+ *   - ?_api=status&jobId=xxx → JSON status response
+ *   - ?_api=installed → JSON installed list
+ */
 export function createHttpHandler(params: HttpHandlerParams) {
   const { logger, uiRoot, pluginRoot, registryUrl, cacheTtl, pluginApi } = params;
   const bundledRegistryPath = path.join(pluginRoot, "registry.json");
 
-  const handler = async function handler(
+  let bundledHtml: string | null = null;
+  let lastBundleTime = 0;
+
+  function buildBundle(): string {
+    const cssPath = path.join(uiRoot, "app.css");
+    const jsPath = path.join(uiRoot, "app.js");
+
+    const css = fs.existsSync(cssPath) ? fs.readFileSync(cssPath, "utf8") : "";
+    let js = fs.existsSync(jsPath) ? fs.readFileSync(jsPath, "utf8") : "";
+
+    // Rewrite API_BASE to use query-parameter dispatch on the same URL
+    js = js.replace(
+      /const API_BASE\s*=\s*["'][^"']*["']/,
+      `const API_BASE = "${PREFIX}"`,
+    );
+
+    return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>App Market — OpenClaw</title>
+  <style>${css}</style>
+</head>
+<body>
+  <div id="app"></div>
+  <script type="module">${js}</script>
+</body>
+</html>`;
+  }
+
+  return async function handler(
     req: IncomingMessage,
     res: ServerResponse,
   ): Promise<boolean> {
     const url = new URL(req.url ?? "/", `http://${req.headers.host || "localhost"}`);
     const pathname = url.pathname;
 
-    // Only handle our prefix
-    if (!pathname.startsWith(PREFIX)) return false;
+    if (pathname !== PREFIX) return false;
 
-    // ── API routes ────────────────────────────────────────────
-    if (pathname.startsWith(API_PREFIX)) {
-      const apiPath = pathname.slice(API_PREFIX.length);
+    // ── API dispatch via _api query param ────────────────────
+    const apiAction = url.searchParams.get("_api");
 
-      if (apiPath === "browse" && req.method === "GET") {
-        return handleBrowse(req, res, url, logger, registryUrl, cacheTtl, bundledRegistryPath);
-      }
-
-      if (apiPath === "install" && req.method === "POST") {
-        return handleInstall(req, res, logger);
-      }
-
-      if (apiPath.startsWith("status/") && req.method === "GET") {
-        const jobId = apiPath.slice("status/".length);
-        return handleStatus(res, jobId);
-      }
-
-      if (apiPath === "installed" && req.method === "GET") {
-        return handleInstalled(res);
-      }
-
-      sendJson(res, 404, { error: "Not found" });
-      return true;
+    if (apiAction === "browse" && req.method === "GET") {
+      return handleBrowse(req, res, url, logger, registryUrl, cacheTtl, bundledRegistryPath);
+    }
+    if (apiAction === "install" && req.method === "POST") {
+      return handleInstall(req, res, logger);
+    }
+    if (apiAction === "status" && req.method === "GET") {
+      const jobId = url.searchParams.get("jobId") || "";
+      return handleStatus(res, jobId);
+    }
+    if (apiAction === "installed" && req.method === "GET") {
+      return handleInstalled(res);
     }
 
-    // ── Injector script (served at PREFIX root for tab injection) ──
-    const subPath = pathname.slice(PREFIX.length) || "/";
-
-    if (subPath === "/injector.js") {
-      const filePath = path.join(uiRoot, "injector.js");
-      return serveFile(res, filePath);
+    // ── HTML bundle ──────────────────────────────────────────
+    const now = Date.now();
+    if (!bundledHtml || now - lastBundleTime > 5000) {
+      try {
+        bundledHtml = buildBundle();
+        lastBundleTime = now;
+      } catch (err) {
+        logger?.warn?.(`[openclaw-appstore] Bundle error: ${err}`);
+        res.statusCode = 500;
+        res.end("Failed to build UI bundle");
+        return true;
+      }
     }
 
-    // ── Static UI files ───────────────────────────────────────
-    return serveStaticOrIndex(res, uiRoot, subPath);
+    res.statusCode = 200;
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
+    res.end(bundledHtml);
+    return true;
   };
-
-  return handler;
 }
 
 // ── API Handlers ──────────────────────────────────────────────────
@@ -141,7 +167,6 @@ async function handleInstall(
       return true;
     }
 
-    // Basic validation
     if (typeof npmSpec !== "string" || npmSpec.length > 500) {
       sendJson(res, 400, { error: "Invalid npmSpec" });
       return true;
@@ -152,7 +177,6 @@ async function handleInstall(
       return true;
     }
 
-    // Disallow suspicious specs (path traversal, etc.)
     if (npmSpec.includes("..") || npmSpec.includes("~")) {
       sendJson(res, 400, { error: "Invalid npm spec: suspicious characters" });
       return true;
@@ -193,60 +217,6 @@ function handleInstalled(res: ServerResponse): boolean {
     sendJson(res, 500, { error: "Failed to get installed plugins" });
   }
   return true;
-}
-
-// ── Static file serving ───────────────────────────────────────────
-
-function serveStaticOrIndex(
-  res: ServerResponse,
-  uiRoot: string,
-  subPath: string,
-): boolean {
-  // Normalize
-  let filePath: string;
-  if (subPath === "/" || subPath === "") {
-    filePath = path.join(uiRoot, "index.html");
-  } else {
-    filePath = path.join(uiRoot, subPath);
-  }
-
-  // Security: ensure path is within uiRoot
-  const resolved = path.resolve(filePath);
-  if (!resolved.startsWith(path.resolve(uiRoot))) {
-    sendJson(res, 403, { error: "Forbidden" });
-    return true;
-  }
-
-  // If file exists, serve it
-  if (fs.existsSync(resolved) && fs.statSync(resolved).isFile()) {
-    return serveFile(res, resolved);
-  }
-
-  // SPA fallback: if no extension, serve index.html
-  const ext = path.extname(subPath);
-  if (!ext) {
-    const indexPath = path.join(uiRoot, "index.html");
-    if (fs.existsSync(indexPath)) {
-      return serveFile(res, indexPath);
-    }
-  }
-
-  sendJson(res, 404, { error: "Not found" });
-  return true;
-}
-
-function serveFile(res: ServerResponse, filePath: string): boolean {
-  try {
-    const ext = path.extname(filePath);
-    const mime = MIME_TYPES[ext] || "application/octet-stream";
-    const content = fs.readFileSync(filePath);
-    res.writeHead(200, { "Content-Type": mime });
-    res.end(content);
-    return true;
-  } catch {
-    sendJson(res, 404, { error: "File not found" });
-    return true;
-  }
 }
 
 // ── Utilities ─────────────────────────────────────────────────────

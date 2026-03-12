@@ -1,7 +1,7 @@
 (function () {
   "use strict";
 
-  const API_BASE = "/plugins/openclaw-appstore/api";
+  const API_BASE = "/plugins/openclaw-appstore";
   const POLL_INTERVAL = 2000;
 
   // ── Categories ────────────────────────────────────────────────
@@ -75,7 +75,8 @@
       if (state.search) params.set("search", state.search);
       if (state.category !== "all") params.set("category", state.category);
 
-      const res = await fetch(`${API_BASE}/browse?${params}`, { signal });
+      params.set("_api", "browse");
+      const res = await fetch(`${API_BASE}?${params}`, { signal });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       state.plugins = data.plugins || [];
@@ -111,7 +112,7 @@
     render();
 
     try {
-      const res = await fetch(`${API_BASE}/install`, {
+      const res = await fetch(`${API_BASE}?_api=install`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -146,7 +147,7 @@
     stopInstallPoll();
     pollTimer = setInterval(async () => {
       try {
-        const res = await fetch(`${API_BASE}/status/${jobId}`);
+        const res = await fetch(`${API_BASE}?_api=status&jobId=${encodeURIComponent(jobId)}`);
         if (!res.ok) return;
         const data = await res.json();
         if (data.status === "done" || data.status === "error") {

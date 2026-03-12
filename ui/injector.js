@@ -12,7 +12,7 @@
   "use strict";
 
   const PLUGIN_ID = "appstore";
-  const PLUGIN_URL = "/plugins/openclaw-appstore/";
+  const PLUGIN_URL = "/plugins/openclaw-appstore";
   const TAB_HASH = "#/appstore";
   const INJECT_ATTR = "data-appstore-dash";
   const TAB_ATTR = "data-appstore-tab";

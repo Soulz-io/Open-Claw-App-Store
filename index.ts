@@ -23,13 +23,13 @@ const plugin = {
     const registryUrl = (pluginCfg.registryUrl as string) || undefined;
     const cacheTtl = (pluginCfg.cacheTtlMs as number) || undefined;
 
-    // ── HTTP routes: marketplace UI + API ────────────────────────
-    // registerHttpRoute with match:"prefix" handles all sub-paths
-    // under /plugins/openclaw-appstore/ (api/browse, api/install, etc.)
+    // ── HTTP routes ────────────────────────────────────────────────
+    // Gateway only supports exact-path matching, so we register:
+    // 1. Base path → self-contained HTML bundle + API via ?_api= params
+    // 2. Injector script → loaded by Control UI <script> tag
     api.registerHttpRoute({
       path: "/plugins/openclaw-appstore",
       auth: "plugin",
-      match: "prefix",
       handler: createHttpHandler({
         logger: api.logger,
         uiRoot,
@@ -38,6 +38,24 @@ const plugin = {
         cacheTtl,
         pluginApi: api,
       }),
+    });
+
+    const injectorPath = path.join(uiRoot, "injector.js");
+    api.registerHttpRoute({
+      path: "/plugins/openclaw-appstore/injector.js",
+      auth: "plugin",
+      handler: async (_req, res) => {
+        try {
+          const content = fs.readFileSync(injectorPath, "utf8");
+          res.statusCode = 200;
+          res.setHeader("Content-Type", "application/javascript; charset=utf-8");
+          res.end(content);
+        } catch {
+          res.statusCode = 404;
+          res.end("Not found");
+        }
+        return true;
+      },
     });
 
     // ── Inject App Market tab into Control UI ─────────────────────
