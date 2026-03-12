@@ -316,7 +316,7 @@
 
     return `
       <div class="header">
-        <h1 class="header__title">App Store</h1>
+        <h1 class="header__title">App Market</h1>
         <div class="header__search">
           <input type="text" class="search-input" placeholder="Search plugins..." value="${esc(state.search)}" id="search-input" />
         </div>
@@ -391,7 +391,7 @@
     }
 
     return `
-      <button class="detail-panel__back" id="back-btn">&#8592; Back to App Store</button>
+      <button class="detail-panel__back" id="back-btn">&#8592; Back to App Market</button>
       <div class="detail-header">
         <div class="detail-header__icon">${esc(plugin.icon || "\ud83d\udce6")}</div>
         <div class="detail-header__info">

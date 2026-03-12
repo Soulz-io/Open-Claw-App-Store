@@ -22,6 +22,7 @@ export interface HttpHandlerParams {
   pluginRoot: string;
   registryUrl?: string;
   cacheTtl?: number;
+  pluginApi?: any;
 }
 
 // ── Constants ─────────────────────────────────────────────────────
@@ -91,13 +92,6 @@ export function createHttpHandler(params: HttpHandlerParams) {
     // ── Static UI files ───────────────────────────────────────
     return serveStaticOrIndex(res, uiRoot, subPath);
   };
-
-  // Register as HTTP handler for sub-path matching.
-  // registerHttpRoute only supports exact path matching, so without this,
-  // sub-paths like /api/browse, /injector.js, etc. would never be reached.
-  if (pluginApi) {
-    pluginApi.registerHttpHandler(handler);
-  }
 
   return handler;
 }

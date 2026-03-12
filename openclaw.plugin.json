@@ -1,6 +1,6 @@
 {
   "id": "openclaw-appstore",
-  "name": "App Store",
+  "name": "App Market",
   "description": "Browse and install OpenClaw plugins from GitHub with one click.",
   "configSchema": {
     "type": "object",

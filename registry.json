@@ -28,7 +28,7 @@
     },
     {
       "id": "openclaw-appstore",
-      "name": "App Store",
+      "name": "App Market",
       "description": "Browse and install OpenClaw plugins from GitHub with one click. Curated marketplace with search, categories, and safe one-click installation.",
       "author": "Soulz",
       "github": "Soulz-io/Open-Claw-App-Store",

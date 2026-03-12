@@ -1,7 +1,7 @@
 {
   "name": "openclaw-appstore",
   "version": "1.0.0",
-  "description": "App Store for OpenClaw — browse and install plugins from GitHub with one click",
+  "description": "App Market for OpenClaw — browse and install plugins from GitHub with one click",
   "type": "module",
   "license": "MIT",
   "repository": {

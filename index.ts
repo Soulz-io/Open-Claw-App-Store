@@ -6,7 +6,7 @@ import { createHttpHandler } from "./src/http-handler.js";
 
 const plugin = {
   id: "openclaw-appstore",
-  name: "App Store",
+  name: "App Market",
   description:
     "Browse and install OpenClaw plugins from GitHub with one click.",
 
@@ -40,10 +40,10 @@ const plugin = {
       }),
     });
 
-    // ── Inject App Store tab into Control UI ─────────────────────
+    // ── Inject App Market tab into Control UI ─────────────────────
     setupControlUiPatchAppstore({ api });
 
-    api.logger.info("App Store plugin registered");
+    api.logger.info("App Market plugin registered");
   },
 };
 

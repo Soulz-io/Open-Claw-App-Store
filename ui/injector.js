@@ -1,23 +1,156 @@
 /**
- * App Store — Tab Injector for OpenClaw Control UI
+ * App Market — Tab Injector for OpenClaw Control UI
  *
- * Injects an "App Store" tab into the Control UI sidebar (Shadow DOM).
- * Uses MutationObserver on childList only (NO attributes) to avoid
- * infinite mutation loops that freeze the page.
+ * Creates the "Apps" nav-group in the Control UI sidebar (Shadow DOM)
+ * and injects an "App Market" tab as the first item.
+ *
+ * Uses a shared coordinator (window.__ocPluginTabs__) so multiple
+ * plugin tabs can coexist without conflicting state, race conditions,
+ * or broken content restoration.
  */
 (function () {
   "use strict";
 
+  const PLUGIN_ID = "appstore";
   const PLUGIN_URL = "/plugins/openclaw-appstore/";
   const TAB_HASH = "#/appstore";
   const INJECT_ATTR = "data-appstore-dash";
+  const TAB_ATTR = "data-appstore-tab";
 
   const ICON_SVG = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>`;
 
-  let active = false;
   let iframeBox = null;
-  let mutationPending = false;
   let _root = null;
+  let mutationPending = false;
+
+  /* ── Shared coordinator ────────────────────────────────────── */
+
+  function ensureCoordinator(root) {
+    if (window.__ocPluginTabs__ && window.__ocPluginTabs__._v === 1) {
+      if (root && !window.__ocPluginTabs__._root) {
+        window.__ocPluginTabs__._root = root;
+      }
+      return window.__ocPluginTabs__;
+    }
+
+    const coord = {
+      _v: 1,
+      _plugins: {},
+      _activeId: null,
+      _setTabWrapped: false,
+      _popstateAttached: false,
+      _root: root || null,
+
+      register(id, opts) {
+        this._plugins[id] = opts;
+      },
+
+      activate(id) {
+        if (this._activeId === id) return;
+        if (!this._plugins[id]) return;
+
+        // Deactivate current plugin
+        if (this._activeId && this._plugins[this._activeId]) {
+          this._plugins[this._activeId].deactivate();
+        }
+
+        // Restore main content, then hide for new plugin
+        this._restoreMainContent();
+        this._hideMainContent(this._plugins[id].injectAttr);
+
+        // Activate new plugin
+        this._activeId = id;
+        this._plugins[id].activate();
+
+        // Push history (deduplicated)
+        const hash = this._plugins[id].hash;
+        if (location.hash !== hash) {
+          history.pushState(null, "", hash);
+        }
+      },
+
+      deactivateAll() {
+        if (!this._activeId) return;
+        if (this._plugins[this._activeId]) {
+          this._plugins[this._activeId].deactivate();
+        }
+        this._activeId = null;
+        this._restoreMainContent();
+      },
+
+      getActive() {
+        return this._activeId;
+      },
+
+      _hideMainContent(injectAttr) {
+        const r = this._root;
+        if (!r) return;
+        const main = r.querySelector("main.content, main, .content");
+        if (!main) return;
+        for (const ch of main.children) {
+          if (ch.hasAttribute("data-oc-plugin-iframe")) {
+            ch.style.display =
+              ch.getAttribute(injectAttr) === "iframe" ? "block" : "none";
+          } else {
+            if (ch.dataset._ocPrev === undefined) {
+              ch.dataset._ocPrev = ch.style.display;
+            }
+            ch.style.display = "none";
+          }
+        }
+      },
+
+      _restoreMainContent() {
+        const r = this._root;
+        if (!r) return;
+        const main = r.querySelector("main.content, main, .content");
+        if (!main) return;
+        for (const ch of main.children) {
+          if (ch.hasAttribute("data-oc-plugin-iframe")) {
+            ch.style.display = "none";
+          } else if (ch.dataset._ocPrev !== undefined) {
+            ch.style.display = ch.dataset._ocPrev;
+            delete ch.dataset._ocPrev;
+          }
+        }
+      },
+
+      _wrapSetTab(app) {
+        if (this._setTabWrapped) return;
+        if (typeof app.setTab !== "function") return;
+        this._setTabWrapped = true;
+        const c = this;
+        const orig = app.setTab.bind(app);
+        app.setTab = function (t) {
+          c.deactivateAll();
+          return orig(t);
+        };
+      },
+
+      _attachPopstate() {
+        if (this._popstateAttached) return;
+        this._popstateAttached = true;
+        const c = this;
+        window.addEventListener("popstate", () => {
+          const hash = location.hash;
+          let matched = false;
+          for (const [id, opts] of Object.entries(c._plugins)) {
+            if (opts.hash === hash) {
+              c.activate(id);
+              matched = true;
+              break;
+            }
+          }
+          if (!matched && c._activeId) c.deactivateAll();
+        });
+      },
+    };
+
+    window.__ocPluginTabs__ = coord;
+    return coord;
+  }
+
+  /* ── Helpers ────────────────────────────────────────────────── */
 
   function getRoot(app) {
     return app.shadowRoot || app;
@@ -37,77 +170,83 @@
     poll();
   }
 
-  function injectTab(nav) {
+  /* ── Tab injection ─────────────────────────────────────────── */
+
+  function injectTab(nav, coord) {
     if (nav.querySelector(`[${INJECT_ATTR}]`)) return;
 
-    // Check if there's already a plugin nav-group we can add to (e.g., from subagents)
-    const existingPluginGroup = nav.querySelector("[data-subagents-dash]");
-    if (existingPluginGroup) {
-      // Add our tab to the existing group's items container
-      const groupEl = existingPluginGroup.closest(".nav-group") || existingPluginGroup;
-      const itemsContainer = groupEl.querySelector(".nav-group__items");
-      if (itemsContainer) {
-        const tab = createTabElement();
-        itemsContainer.appendChild(tab);
-        tab.addEventListener("click", onTabClick);
-        return;
-      }
+    // Look for existing "Apps" nav-group
+    let appsGroup = null;
+    for (const grp of nav.querySelectorAll(".nav-group")) {
+      const lt = grp.querySelector(".nav-label__text");
+      if (lt && lt.textContent.trim() === "Apps") { appsGroup = grp; break; }
     }
 
-    // Otherwise, create our own nav-group
-    const group = document.createElement("div");
-    group.className = "nav-group";
-    group.setAttribute(INJECT_ATTR, "");
-    group.innerHTML = `
-      <button class="nav-label" aria-expanded="true">
-        <span class="nav-label__text">Apps</span>
-        <span class="nav-label__chevron">\u2212</span>
-      </button>
-      <div class="nav-group__items">
-        <a href="${TAB_HASH}" class="nav-item" title="App Store"
-           data-appstore-tab ${INJECT_ATTR}>
-          <span class="nav-item__icon" aria-hidden="true">${ICON_SVG}</span>
-          <span class="nav-item__text">App Store</span>
-        </a>
-      </div>`;
+    if (appsGroup) {
+      const items = appsGroup.querySelector(".nav-group__items");
+      if (items) {
+        const tab = createTabElement(coord);
+        if (items.firstChild) items.insertBefore(tab, items.firstChild);
+        else items.appendChild(tab);
+      }
+    } else {
+      // Create "Apps" nav-group with App Market first
+      const group = document.createElement("div");
+      group.className = "nav-group";
+      group.setAttribute(INJECT_ATTR, "");
+      group.innerHTML = `
+        <button class="nav-label" aria-expanded="true">
+          <span class="nav-label__text">Apps</span>
+          <span class="nav-label__chevron">\u2212</span>
+        </button>
+        <div class="nav-group__items">
+          <a href="${TAB_HASH}" class="nav-item" title="App Market"
+             ${TAB_ATTR} ${INJECT_ATTR}>
+            <span class="nav-item__icon" aria-hidden="true">${ICON_SVG}</span>
+            <span class="nav-item__text">App Market</span>
+          </a>
+        </div>`;
 
-    const links = nav.querySelector(".nav-group--links");
-    if (links) nav.insertBefore(group, links);
-    else nav.appendChild(group);
+      const links = nav.querySelector(".nav-group--links");
+      if (links) nav.insertBefore(group, links);
+      else nav.appendChild(group);
 
-    // Collapse toggle
-    const label = group.querySelector(".nav-label");
-    const chevron = group.querySelector(".nav-label__chevron");
-    const items = group.querySelector(".nav-group__items");
-    label.addEventListener("click", (e) => {
-      e.stopPropagation();
-      const collapsed = items.style.display === "none";
-      items.style.display = collapsed ? "" : "none";
-      chevron.textContent = collapsed ? "\u2212" : "+";
-    });
+      // Collapse toggle
+      const label = group.querySelector(".nav-label");
+      const chevron = group.querySelector(".nav-label__chevron");
+      const items = group.querySelector(".nav-group__items");
+      label.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const collapsed = items.style.display === "none";
+        items.style.display = collapsed ? "" : "none";
+        chevron.textContent = collapsed ? "\u2212" : "+";
+      });
 
-    // Tab click
-    group.querySelector("[data-appstore-tab]").addEventListener("click", onTabClick);
+      group.querySelector(`[${TAB_ATTR}]`).addEventListener("click", (e) => {
+        e.preventDefault(); e.stopPropagation();
+        coord.activate(PLUGIN_ID);
+      });
+    }
   }
 
-  function createTabElement() {
+  function createTabElement(coord) {
     const tab = document.createElement("a");
     tab.href = TAB_HASH;
     tab.className = "nav-item";
-    tab.title = "App Store";
-    tab.setAttribute("data-appstore-tab", "");
+    tab.title = "App Market";
+    tab.setAttribute(TAB_ATTR, "");
     tab.setAttribute(INJECT_ATTR, "");
     tab.innerHTML = `
       <span class="nav-item__icon" aria-hidden="true">${ICON_SVG}</span>
-      <span class="nav-item__text">App Store</span>`;
+      <span class="nav-item__text">App Market</span>`;
+    tab.addEventListener("click", (e) => {
+      e.preventDefault(); e.stopPropagation();
+      coord.activate(PLUGIN_ID);
+    });
     return tab;
   }
 
-  function onTabClick(e) {
-    e.preventDefault();
-    e.stopPropagation();
-    activate();
-  }
+  /* ── Iframe management ─────────────────────────────────────── */
 
   function ensureIframe() {
     if (iframeBox || !_root) return;
@@ -116,6 +255,7 @@
 
     iframeBox = document.createElement("div");
     iframeBox.setAttribute(INJECT_ATTR, "iframe");
+    iframeBox.setAttribute("data-oc-plugin-iframe", "");
     iframeBox.style.cssText =
       "display:none;position:absolute;inset:0;z-index:50;background:var(--bg,#12141a);";
 
@@ -123,7 +263,7 @@
     iframe.src = PLUGIN_URL;
     iframe.style.cssText = "width:100%;height:100%;border:none;background:var(--bg,#12141a);";
     iframe.setAttribute("allow", "clipboard-write");
-    iframe.setAttribute("title", "App Store");
+    iframe.setAttribute("title", "App Market");
     iframeBox.appendChild(iframe);
 
     if (window.getComputedStyle(main).position === "static") {
@@ -132,94 +272,68 @@
     main.appendChild(iframeBox);
   }
 
-  function activate() {
-    if (active || !_root) return;
-    active = true;
+  /* ── Plugin-local activate / deactivate ────────────────────── */
+
+  function activateSelf() {
     ensureIframe();
-
-    const main = _root.querySelector("main.content, main, .content");
-    if (main) {
-      for (const ch of main.children) {
-        if (ch.getAttribute(INJECT_ATTR) === "iframe") ch.style.display = "block";
-        else { ch.dataset._appstorePrev = ch.style.display; ch.style.display = "none"; }
-      }
-    }
-
-    const nav = _root.querySelector("aside.nav, aside, .nav");
+    if (iframeBox) iframeBox.style.display = "block";
+    const nav = _root && _root.querySelector("aside.nav, aside, .nav");
     if (nav) {
       nav.querySelectorAll(".nav-item").forEach((el) => {
-        if (el.hasAttribute(INJECT_ATTR)) el.classList.add("active");
-        else el.classList.remove("active");
+        el.classList.toggle("active", el.hasAttribute(TAB_ATTR));
       });
-    }
-    if (location.hash !== TAB_HASH) {
-      history.pushState(null, "", TAB_HASH);
     }
   }
 
-  function deactivate() {
-    if (!active || !_root) return;
-    active = false;
+  function deactivateSelf() {
     if (iframeBox) iframeBox.style.display = "none";
-
-    const main = _root.querySelector("main.content, main, .content");
-    if (main) {
-      for (const ch of main.children) {
-        if (ch.getAttribute(INJECT_ATTR) !== "iframe" && ch.dataset._appstorePrev !== undefined) {
-          ch.style.display = ch.dataset._appstorePrev;
-          delete ch.dataset._appstorePrev;
-        }
-      }
-    }
-    const tab = _root.querySelector("[data-appstore-tab]");
+    const tab = _root && _root.querySelector(`[${TAB_ATTR}]`);
     if (tab) tab.classList.remove("active");
   }
 
+  /* ── Bootstrap ─────────────────────────────────────────────── */
+
   waitForApp(function (app, root, nav) {
     _root = root;
-    injectTab(nav);
+    const coord = ensureCoordinator(root);
 
-    // Observe nav only, childList only — no attributes to avoid infinite loops
+    coord.register(PLUGIN_ID, {
+      activate: activateSelf,
+      deactivate: deactivateSelf,
+      hash: TAB_HASH,
+      injectAttr: INJECT_ATTR,
+    });
+
+    injectTab(nav, coord);
+
+    // Nav observer — re-inject if Lit rebuilds the sidebar
     const observer = new MutationObserver(() => {
       if (mutationPending) return;
       mutationPending = true;
       requestAnimationFrame(() => {
         mutationPending = false;
         const cur = root.querySelector("aside.nav, aside, .nav");
-        if (!cur) return;
-        if (!cur.querySelector(`[${INJECT_ATTR}]`)) injectTab(cur);
-        if (active) {
-          const other = cur.querySelector(".nav-item.active:not([data-appstore-tab])");
-          if (other) deactivate();
-        }
+        if (cur && !cur.querySelector(`[${INJECT_ATTR}]`)) injectTab(cur, coord);
       });
     });
     observer.observe(nav, { childList: true, subtree: true });
 
-    // Watch for nav replacement by Lit (single observer, reused)
     const navParent = nav.parentElement;
     if (navParent) {
-      const parentObserver = new MutationObserver(() => {
+      new MutationObserver(() => {
         const newNav = root.querySelector("aside.nav, aside, .nav");
         if (newNav && !newNav.querySelector(`[${INJECT_ATTR}]`)) {
-          injectTab(newNav);
+          injectTab(newNav, coord);
           observer.disconnect();
           observer.observe(newNav, { childList: true, subtree: true });
         }
-      });
-      parentObserver.observe(navParent, { childList: true });
+      }).observe(navParent, { childList: true });
     }
 
-    if (typeof app.setTab === "function") {
-      const orig = app.setTab.bind(app);
-      app.setTab = function (t) { deactivate(); return orig(t); };
-    }
+    // Global hooks — coordinator ensures these only attach once
+    coord._wrapSetTab(app);
+    coord._attachPopstate();
 
-    window.addEventListener("popstate", () => {
-      if (location.hash === TAB_HASH) activate();
-      else if (active) deactivate();
-    });
-
-    if (location.hash === TAB_HASH) setTimeout(activate, 150);
+    if (location.hash === TAB_HASH) setTimeout(() => coord.activate(PLUGIN_ID), 150);
   });
 })();
