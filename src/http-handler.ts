@@ -4,6 +4,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { browsePlugins, getTrendingPlugins, getInstalledPluginIds, type BrowseOptions } from "./marketplace-store.js";
 import {
   startInstall,
+  startUninstall,
   getJobStatus,
   type InstallJob,
 } from "./marketplace-installer.js";
@@ -39,6 +40,8 @@ const PREFIX = "/plugins/openclaw-appstore";
  *   - ?_api=install   → JSON install response (POST)
  *   - ?_api=status&jobId=xxx → JSON status response
  *   - ?_api=installed → JSON installed list
+ *   - ?_api=uninstall → JSON uninstall response (POST)
+ *   - ?_api=readme&github=owner/repo → README content
  *   - ?_api=trending  → JSON trending top 10
  */
 export function createHttpHandler(params: HttpHandlerParams) {
@@ -100,6 +103,13 @@ export function createHttpHandler(params: HttpHandlerParams) {
     }
     if (apiAction === "installed" && req.method === "GET") {
       return handleInstalled(res);
+    }
+    if (apiAction === "uninstall" && req.method === "POST") {
+      return handleUninstall(req, res, logger);
+    }
+    if (apiAction === "readme" && req.method === "GET") {
+      const github = url.searchParams.get("github") || "";
+      return handleReadme(res, github, logger);
     }
     if (apiAction === "trending" && req.method === "GET") {
       return handleTrending(res, logger, registryUrl, bundledRegistryPath);
@@ -226,6 +236,83 @@ async function handleTrending(
   } catch (err) {
     logger?.error?.(`[appstore] Trending error: ${err}`);
     sendJson(res, 500, { error: "Failed to fetch trending plugins" });
+  }
+  return true;
+}
+
+async function handleUninstall(
+  req: IncomingMessage,
+  res: ServerResponse,
+  logger?: PluginLogger,
+): Promise<boolean> {
+  try {
+    const body = await readBody(req);
+    const { pluginId } = body as { pluginId?: string };
+
+    if (!pluginId) {
+      sendJson(res, 400, { error: "Missing required field: pluginId" });
+      return true;
+    }
+
+    if (typeof pluginId !== "string" || pluginId.length > 100) {
+      sendJson(res, 400, { error: "Invalid pluginId" });
+      return true;
+    }
+
+    const jobId = startUninstall(pluginId, logger);
+    sendJson(res, 202, { jobId, status: "uninstalling", pluginId });
+  } catch (err) {
+    logger?.error?.(`[appstore] Uninstall error: ${err}`);
+    sendJson(res, 500, { error: "Failed to start uninstallation" });
+  }
+  return true;
+}
+
+// ── README cache ──────────────────────────────────────────────────
+const readmeCache = new Map<string, { content: string; fetchedAt: number }>();
+const README_CACHE_TTL = 10 * 60 * 1000; // 10 minutes
+const README_MAX_SIZE = 64 * 1024; // 64KB max
+
+async function handleReadme(
+  res: ServerResponse,
+  github: string,
+  logger?: PluginLogger,
+): Promise<boolean> {
+  if (!github || !/^[a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+$/.test(github)) {
+    sendJson(res, 400, { error: "Invalid github parameter" });
+    return true;
+  }
+
+  // Check cache
+  const cached = readmeCache.get(github);
+  if (cached && Date.now() - cached.fetchedAt < README_CACHE_TTL) {
+    sendJson(res, 200, { readme: cached.content });
+    return true;
+  }
+
+  try {
+    // Try main branch first, then master
+    let content: string | null = null;
+    for (const branch of ["main", "master"]) {
+      const url = `https://raw.githubusercontent.com/${github}/${branch}/README.md`;
+      const resp = await fetch(url);
+      if (resp.ok) {
+        const text = await resp.text();
+        content = text.length > README_MAX_SIZE ? text.slice(0, README_MAX_SIZE) : text;
+        break;
+      }
+    }
+
+    if (!content) {
+      sendJson(res, 404, { error: "README not found" });
+      return true;
+    }
+
+    readmeCache.set(github, { content, fetchedAt: Date.now() });
+    sendJson(res, 200, { readme: content });
+  } catch (err) {
+    logger?.error?.(`[appstore] README fetch error for ${github}: ${err}`);
+    sendJson(res, 500, { error: "Failed to fetch README" });
   }
   return true;
 }

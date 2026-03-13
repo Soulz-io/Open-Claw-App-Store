@@ -1,5 +1,7 @@
 import { spawn } from "node:child_process";
 import crypto from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
 
 // ── Interfaces ────────────────────────────────────────────────────
 
@@ -7,7 +9,7 @@ export interface InstallJob {
   jobId: string;
   pluginId: string;
   npmSpec: string;
-  status: "installing" | "done" | "error";
+  status: "installing" | "uninstalling" | "done" | "error";
   startedAt: number;
   endedAt?: number;
   error?: string;
@@ -79,6 +81,33 @@ export function startInstall(
  */
 export function getJobStatus(jobId: string): InstallJob | null {
   return installJobs.get(jobId) ?? null;
+}
+
+/**
+ * Start a plugin uninstallation. Returns a jobId for status polling.
+ * Removes plugin files from extensions dir and config entries from openclaw.json.
+ */
+export function startUninstall(
+  pluginId: string,
+  logger?: PluginLogger,
+): string {
+  const jobId = crypto.randomUUID();
+
+  const job: InstallJob = {
+    jobId,
+    pluginId,
+    npmSpec: "",
+    status: "uninstalling",
+    startedAt: Date.now(),
+  };
+
+  installJobs.set(jobId, job);
+  cleanOldJobs();
+
+  // Run async but don't block the response
+  runUninstall(jobId, pluginId, logger);
+
+  return jobId;
 }
 
 /**
@@ -188,28 +217,134 @@ function finishAndProcessQueue(logger?: PluginLogger): void {
 }
 
 function extractErrorMessage(stderr: string, stdout: string): string {
-  // Try to find the most relevant error line
   const combined = `${stderr}\n${stdout}`;
-  const lines = combined.split("\n").map((l) => l.trim()).filter(Boolean);
+  const lines = combined
+    .split("\n")
+    .map((l) => l.replace(/\x1b\[[0-9;]*m/g, "").trim())
+    .filter(Boolean);
 
-  // Look for common error patterns
-  for (const line of lines) {
-    if (
-      line.includes("Error:") ||
-      line.includes("error:") ||
-      line.includes("failed") ||
-      line.includes("not found") ||
-      line.includes("ENOENT") ||
-      line.includes("EACCES") ||
-      line.includes("already exists")
-    ) {
-      // Clean up ANSI codes
-      return line.replace(/\x1b\[[0-9;]*m/g, "").trim();
+  // Filter out gateway plugin system noise (e.g. "[plugins] [engine-manager] Virtualenv already exists.")
+  const relevantLines = lines.filter(
+    (l) => !l.startsWith("[plugins]") && !l.startsWith("[gateway]"),
+  );
+
+  // Look for common error patterns in relevant lines first
+  const errorPatterns = ["Error:", "error:", "ERR!", "failed", "not found", "ENOENT", "EACCES"];
+  for (const line of relevantLines) {
+    if (errorPatterns.some((p) => line.includes(p))) {
+      return line;
     }
   }
 
-  // Fallback: last non-empty line
-  return lines[lines.length - 1]?.replace(/\x1b\[[0-9;]*m/g, "").trim() ?? "Unknown error";
+  // Fallback: last relevant non-empty line
+  if (relevantLines.length > 0) {
+    return relevantLines[relevantLines.length - 1] ?? "Unknown error";
+  }
+
+  // Last resort: last line from all output
+  return lines[lines.length - 1] ?? "Unknown error";
+}
+
+// ── Uninstall logic ──────────────────────────────────────────────
+
+const PROTECTED_PLUGINS = new Set(["openclaw-appstore"]);
+
+function getConfigPath(): string {
+  const home = process.env.HOME || "/root";
+  return path.join(home, ".openclaw/openclaw.json");
+}
+
+function getExtensionsDir(): string {
+  const home = process.env.HOME || "/root";
+  return path.join(home, ".openclaw/extensions");
+}
+
+async function runUninstall(
+  jobId: string,
+  pluginId: string,
+  logger?: PluginLogger,
+): Promise<void> {
+  const job = installJobs.get(jobId);
+  if (!job) return;
+
+  try {
+    logger?.info?.(`[appstore] Starting uninstall: ${pluginId}`);
+
+    // Safety: block self-uninstall
+    if (PROTECTED_PLUGINS.has(pluginId)) {
+      job.status = "error";
+      job.error = "Cannot uninstall the App Market plugin itself.";
+      job.endedAt = Date.now();
+      return;
+    }
+
+    // 1. Read config to find install metadata
+    const configPath = getConfigPath();
+    let config: any = {};
+    try {
+      config = JSON.parse(fs.readFileSync(configPath, "utf8"));
+    } catch {
+      job.status = "error";
+      job.error = "Could not read openclaw.json config.";
+      job.endedAt = Date.now();
+      return;
+    }
+
+    const installInfo = config?.plugins?.installs?.[pluginId];
+
+    // Block path-based (dev) installs
+    if (installInfo?.source === "path") {
+      job.status = "error";
+      job.error = "Cannot uninstall path-based (development) plugins. Remove them manually.";
+      job.endedAt = Date.now();
+      return;
+    }
+
+    // 2. Remove extension directory (only if under ~/.openclaw/extensions/)
+    const extDir = getExtensionsDir();
+    const installPath = installInfo?.installPath;
+    if (installPath && typeof installPath === "string") {
+      const resolved = path.resolve(installPath);
+      if (resolved.startsWith(extDir + "/") && fs.existsSync(resolved)) {
+        logger?.info?.(`[appstore] Removing directory: ${resolved}`);
+        fs.rmSync(resolved, { recursive: true, force: true });
+      }
+    }
+
+    // Also check default extension path even without install metadata
+    const defaultExtPath = path.join(extDir, pluginId);
+    if (fs.existsSync(defaultExtPath)) {
+      logger?.info?.(`[appstore] Removing directory: ${defaultExtPath}`);
+      fs.rmSync(defaultExtPath, { recursive: true, force: true });
+    }
+
+    // 3. Remove config entries
+    let configChanged = false;
+    if (config?.plugins?.entries?.[pluginId]) {
+      delete config.plugins.entries[pluginId];
+      configChanged = true;
+    }
+    if (config?.plugins?.installs?.[pluginId]) {
+      delete config.plugins.installs[pluginId];
+      configChanged = true;
+    }
+
+    if (configChanged) {
+      fs.writeFileSync(configPath, JSON.stringify(config, null, 2), "utf8");
+      logger?.info?.(`[appstore] Removed config entries for: ${pluginId}`);
+    }
+
+    // 4. Done
+    job.status = "done";
+    job.message = `Plugin "${pluginId}" has been removed. Restart the gateway to apply changes.`;
+    job.endedAt = Date.now();
+    logger?.info?.(`[appstore] Uninstall complete: ${pluginId}`);
+  } catch (err) {
+    job.status = "error";
+    job.error = `Uninstall failed: ${err instanceof Error ? err.message : String(err)}`;
+    job.endedAt = Date.now();
+    logger?.error?.(`[appstore] Uninstall error for ${pluginId}: ${err}`);
+  }
 }
 
 function cleanOldJobs(): void {

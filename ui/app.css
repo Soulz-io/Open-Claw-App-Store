@@ -371,6 +371,25 @@ body {
 .btn--danger { background: var(--red); color: #fff; }
 .btn--danger:hover { background: #e05050; }
 
+.btn--add {
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-size: 1.3rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+  flex-shrink: 0;
+  padding: 0;
+  line-height: 1;
+}
+.btn--add:hover { border-color: var(--accent); background: var(--bg-hover); }
+
 /* ── Install progress ─────────────────────────────────────────── */
 .install-progress {
   display: flex;
@@ -657,6 +676,93 @@ body {
   gap: 12px;
   overflow: hidden;
 }
+/* ── README section ───────────────────────────────────────────── */
+.readme-section {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 20px;
+  margin-bottom: 20px;
+  max-height: 500px;
+  overflow-y: auto;
+}
+.readme-section__title {
+  font-size: 0.9rem;
+  font-weight: 600;
+  margin-bottom: 12px;
+  color: var(--text);
+}
+.readme-section__loading {
+  font-size: 0.82rem;
+  color: var(--text-dim);
+}
+.readme-section__content {
+  font-size: 0.82rem;
+  line-height: 1.6;
+  color: var(--text-dim);
+}
+.readme-section__content a {
+  color: var(--accent);
+  text-decoration: none;
+}
+.readme-section__content a:hover { text-decoration: underline; }
+.readme-h3 {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--text);
+  margin: 16px 0 8px 0;
+}
+.readme-h4 {
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: var(--text);
+  margin: 12px 0 6px 0;
+}
+.readme-p { margin: 6px 0; }
+.readme-ul {
+  list-style: disc;
+  padding-left: 20px;
+  margin: 8px 0;
+}
+.readme-li { padding: 2px 0; }
+.readme-code {
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 1px 5px;
+}
+.readme-pre {
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 12px;
+  overflow-x: auto;
+  margin: 8px 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* ── Danger confirm box ───────────────────────────────────────── */
+.confirm-box--danger {
+  border-color: rgba(248,113,113,0.3);
+}
+.confirm-box__warning {
+  font-size: 0.85rem;
+  color: var(--text-dim);
+  margin-bottom: 12px;
+}
+
+/* ── Custom install input ────────────────────────────────────── */
+.custom-install-input {
+  background-position: 10px center;
+  padding-left: 12px;
+  background-image: none;
+}
+
 .trending-skeleton-card {
   flex: 0 0 220px;
   height: 130px;

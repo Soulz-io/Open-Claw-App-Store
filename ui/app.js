@@ -29,6 +29,7 @@
     source: "all",          // "all" | "curated" | "community"
     selectedPlugin: null,
     installJob: null,       // { jobId, pluginId, status, error?, message? }
+    readme: null,           // { content, loading, error }
     loading: true,
     error: null,
   };
@@ -109,6 +110,48 @@
     render();
   }
 
+  async function fetchReadme(github) {
+    if (!github) return;
+    state.readme = { content: null, loading: true, error: null };
+    render();
+    try {
+      const res = await fetch(`${API_BASE}?_api=readme&github=${encodeURIComponent(github)}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      state.readme = { content: data.readme, loading: false, error: null };
+    } catch {
+      state.readme = { content: null, loading: false, error: "Could not load README" };
+    }
+    render();
+  }
+
+  function renderMarkdown(md) {
+    if (!md) return "";
+    let html = esc(md);
+    // Headers
+    html = html.replace(/^#{3}\s+(.+)$/gm, '<h4 class="readme-h4">$1</h4>');
+    html = html.replace(/^#{2}\s+(.+)$/gm, '<h3 class="readme-h3">$1</h3>');
+    html = html.replace(/^#{1}\s+(.+)$/gm, '<h3 class="readme-h3">$1</h3>');
+    // Bold and italic
+    html = html.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+    html = html.replace(/\*(.+?)\*/g, "<em>$1</em>");
+    // Inline code
+    html = html.replace(/`([^`]+)`/g, '<code class="readme-code">$1</code>');
+    // Code blocks (``` ... ```)
+    html = html.replace(/```[\w]*\n([\s\S]*?)```/g, '<pre class="readme-pre">$1</pre>');
+    // Unordered lists
+    html = html.replace(/^[-*]\s+(.+)$/gm, '<li class="readme-li">$1</li>');
+    html = html.replace(/((?:<li class="readme-li">.*<\/li>\n?)+)/g, '<ul class="readme-ul">$1</ul>');
+    // Links [text](url)
+    html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+    // Line breaks (double newline → paragraph break)
+    html = html.replace(/\n\n+/g, '</p><p class="readme-p">');
+    html = '<p class="readme-p">' + html + "</p>";
+    // Clean up empty paragraphs
+    html = html.replace(/<p class="readme-p">\s*<\/p>/g, "");
+    return html;
+  }
+
   async function requestInstall(plugin) {
     state.installJob = {
       jobId: null,
@@ -181,7 +224,10 @@
           // Update plugin installed status
           if (data.status === "done") {
             const p = state.plugins.find((x) => x.id === state.installJob.pluginId);
-            if (p) p.installed = true;
+            if (p) {
+              // If we were uninstalling, mark as not installed; otherwise mark as installed
+              p.installed = state.installJob._action !== "uninstall";
+            }
           }
           render();
         }
@@ -203,16 +249,145 @@
     render();
   }
 
-  function selectPlugin(plugin) {
-    state.view = "detail";
-    state.selectedPlugin = plugin;
+  // ── Uninstall ──────────────────────────────────────────────────
+  function requestUninstall(plugin) {
+    state.installJob = {
+      jobId: null,
+      pluginId: plugin.id,
+      status: "confirm-uninstall",
+      _action: "uninstall",
+    };
+    installing = false;
+    render();
+  }
+
+  async function confirmUninstall(plugin) {
+    if (installing) return;
+    installing = true;
+
+    state.installJob = {
+      ...state.installJob,
+      status: "uninstalling",
+    };
+    render();
+
+    try {
+      const res = await fetch(`${API_BASE}?_api=uninstall`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pluginId: plugin.id }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || `HTTP ${res.status}`);
+      }
+      const data = await res.json();
+      state.installJob = {
+        ...state.installJob,
+        jobId: data.jobId,
+        status: "uninstalling",
+      };
+      render();
+      startInstallPoll(data.jobId);
+    } catch (err) {
+      installing = false;
+      state.installJob = {
+        ...state.installJob,
+        status: "error",
+        error: err.message,
+      };
+      render();
+    }
+  }
+
+  // ── Custom GitHub URL install ──────────────────────────────────
+  function showCustomInstall() {
+    state.view = "custom-install";
     state.installJob = null;
     installing = false;
     render();
   }
 
+  function backFromCustomInstall() {
+    state.view = "grid";
+    state.installJob = null;
+    installing = false;
+    stopInstallPoll();
+    render();
+  }
+
+  async function submitCustomInstall(githubUrl) {
+    if (installing) return;
+    installing = true;
+
+    // Parse GitHub URL → owner/repo
+    const match = githubUrl.trim().match(/github\.com\/([^\/]+\/[^\/\s#?]+)/);
+    if (!match) {
+      state.installJob = {
+        status: "error",
+        error: "Invalid GitHub URL. Expected format: https://github.com/owner/repo",
+      };
+      installing = false;
+      render();
+      return;
+    }
+
+    const ownerRepo = match[1].replace(/\.git$/, "");
+    const parts = ownerRepo.split("/");
+    const repoName = parts[1];
+    // Use "github:owner/repo" as npm spec for openclaw install
+    const npmSpec = `github:${ownerRepo}`;
+    const pluginId = repoName;
+
+    state.installJob = {
+      jobId: null,
+      pluginId,
+      status: "installing",
+    };
+    render();
+
+    try {
+      const res = await fetch(`${API_BASE}?_api=install`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ npmSpec, pluginId }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || `HTTP ${res.status}`);
+      }
+      const data = await res.json();
+      state.installJob = {
+        ...state.installJob,
+        jobId: data.jobId,
+        status: "installing",
+      };
+      render();
+      startInstallPoll(data.jobId);
+    } catch (err) {
+      installing = false;
+      state.installJob = {
+        ...state.installJob,
+        status: "error",
+        error: err.message,
+      };
+      render();
+    }
+  }
+
+  function selectPlugin(plugin) {
+    state.view = "detail";
+    state.selectedPlugin = plugin;
+    state.installJob = null;
+    state.readme = null;
+    installing = false;
+    render();
+    if (plugin.github) fetchReadme(plugin.github);
+  }
+
   function backToGrid() {
     state.view = "grid";
+    state.readme = null;
     state.selectedPlugin = null;
     state.installJob = null;
     installing = false;
@@ -281,7 +456,10 @@
     const selStart = searchHadFocus ? activeEl.selectionStart : null;
     const selEnd = searchHadFocus ? activeEl.selectionEnd : null;
 
-    if (state.view === "detail" && state.selectedPlugin) {
+    if (state.view === "custom-install") {
+      app.innerHTML = renderCustomInstall();
+      bindCustomInstallEvents();
+    } else if (state.view === "detail" && state.selectedPlugin) {
       app.innerHTML = renderDetail(state.selectedPlugin);
       bindDetailEvents();
     } else {
@@ -347,7 +525,7 @@
       }
     }
 
-    let contentHtml;
+    let contentHtml = "";
     if (state.loading) {
       contentHtml = `<div class="skeleton-grid">
         ${Array(6).fill('<div class="skeleton-card"></div>').join("")}
@@ -388,6 +566,7 @@
         <div class="header__search">
           <input type="text" class="search-input" placeholder="Search plugins..." value="${esc(state.search)}" id="search-input" />
         </div>
+        <button class="btn btn--add" id="custom-install-btn" title="Install from GitHub URL">&#43;</button>
       </div>
       <div class="filters">
         ${filtersHtml}
@@ -471,6 +650,9 @@
       actionHtml = `<div class="confirm-box">
         <div class="confirm-box__title">&#9989; Already Installed</div>
         <p style="font-size:0.85rem;color:var(--text-dim);">This plugin is already installed and active on your OpenClaw instance.</p>
+        <div class="confirm-box__actions" style="margin-top:12px;">
+          <button class="btn btn--danger" id="uninstall-btn">Uninstall Plugin</button>
+        </div>
       </div>`;
     } else {
       actionHtml = `
@@ -517,11 +699,57 @@
       <div class="detail-links">
         <a href="https://github.com/${esc(plugin.github)}" target="_blank" rel="noopener">&#128279; View on GitHub</a>
       </div>
+      ${renderReadmeSection()}
       ${actionHtml}`;
+  }
+
+  function renderReadmeSection() {
+    if (!state.readme) return "";
+    if (state.readme.loading) {
+      return `<div class="readme-section">
+        <div class="readme-section__title">About this plugin</div>
+        <div class="readme-section__loading">Loading...</div>
+      </div>`;
+    }
+    if (state.readme.error || !state.readme.content) {
+      return "";
+    }
+    return `<div class="readme-section">
+      <div class="readme-section__title">About this plugin</div>
+      <div class="readme-section__content">${renderMarkdown(state.readme.content)}</div>
+    </div>`;
   }
 
   function renderInstallState(plugin) {
     const job = state.installJob;
+
+    if (job.status === "confirm-uninstall") {
+      return `
+        <div class="confirm-box confirm-box--danger">
+          <div class="confirm-box__title">&#128465; Confirm Uninstall</div>
+          <p class="confirm-box__warning">Are you sure you want to remove <strong>${esc(plugin.name)}</strong>?</p>
+          <ul class="confirm-box__list">
+            <li>Plugin files will be removed from ~/.openclaw/extensions/</li>
+            <li>Plugin config entries will be removed from openclaw.json</li>
+            <li>Gateway restart required to apply changes</li>
+          </ul>
+          <div class="confirm-box__actions">
+            <button class="btn btn--ghost" id="cancel-install-btn">Cancel</button>
+            <button class="btn btn--danger" id="confirm-uninstall-btn">Confirm Uninstall</button>
+          </div>
+        </div>`;
+    }
+
+    if (job.status === "uninstalling") {
+      return `
+        <div class="confirm-box">
+          <div class="install-progress">
+            <div class="install-progress__spinner"></div>
+            <div class="install-progress__text">Removing ${esc(plugin.name)}...</div>
+            <div style="font-size:0.78rem;color:var(--text-dim);">Cleaning up plugin files and config.</div>
+          </div>
+        </div>`;
+    }
 
     if (job.status === "confirming") {
       return `
@@ -552,13 +780,14 @@
     }
 
     if (job.status === "done") {
+      const isUninstall = job._action === "uninstall";
       return `
         <div class="confirm-box">
           <div class="result-box">
-            <div class="result-box__icon">&#9989;</div>
-            <div class="result-box__title">Installed Successfully!</div>
-            <div class="result-box__msg">${esc(plugin.name)} has been installed.</div>
-            <div class="result-box__msg">Restart the gateway to activate:</div>
+            <div class="result-box__icon">${isUninstall ? "&#128465;" : "&#9989;"}</div>
+            <div class="result-box__title">${isUninstall ? "Removed Successfully!" : "Installed Successfully!"}</div>
+            <div class="result-box__msg">${esc(plugin.name)} has been ${isUninstall ? "removed" : "installed"}.</div>
+            <div class="result-box__msg">Restart the gateway to apply changes:</div>
             <div class="result-box__cmd">openclaw gateway restart</div>
             <div class="result-box__actions">
               <button class="btn btn--primary" id="close-result-btn">Done</button>
@@ -584,6 +813,116 @@
     }
 
     return "";
+  }
+
+  // ── Custom install view ──────────────────────────────────────
+  function renderCustomInstall() {
+    let contentHtml = "";
+    if (state.installJob) {
+      const job = state.installJob;
+      if (job.status === "installing") {
+        contentHtml = `
+          <div class="confirm-box">
+            <div class="install-progress">
+              <div class="install-progress__spinner"></div>
+              <div class="install-progress__text">Installing from GitHub...</div>
+              <div style="font-size:0.78rem;color:var(--text-dim);">Downloading and setting up the plugin. This may take a moment.</div>
+            </div>
+          </div>`;
+      } else if (job.status === "done") {
+        contentHtml = `
+          <div class="confirm-box">
+            <div class="result-box">
+              <div class="result-box__icon">&#9989;</div>
+              <div class="result-box__title">Installed Successfully!</div>
+              <div class="result-box__msg">${esc(job.message || "Plugin installed.")}</div>
+              <div class="result-box__msg">Restart the gateway to activate:</div>
+              <div class="result-box__cmd">openclaw gateway restart</div>
+              <div class="result-box__actions">
+                <button class="btn btn--primary" id="custom-done-btn">Done</button>
+              </div>
+            </div>
+          </div>`;
+      } else if (job.status === "error") {
+        contentHtml = `
+          <div class="confirm-box">
+            <div class="result-box">
+              <div class="result-box__icon">&#10060;</div>
+              <div class="result-box__title">Installation Failed</div>
+              <div class="result-box__error">${esc(job.error || "Unknown error")}</div>
+              <div class="result-box__msg">No changes were made to your system.</div>
+              <div class="result-box__actions">
+                <button class="btn btn--ghost" id="custom-error-back-btn">Back</button>
+              </div>
+            </div>
+          </div>`;
+      }
+    } else {
+      contentHtml = `
+        <div class="confirm-box custom-install-box">
+          <div class="confirm-box__title">&#128279; Install from GitHub</div>
+          <p style="font-size:0.85rem;color:var(--text-dim);margin-bottom:16px;">
+            Paste a GitHub repository URL to install a plugin directly. The plugin will be downloaded, installed, and configured automatically.
+          </p>
+          <input type="text" class="search-input custom-install-input" id="github-url-input"
+            placeholder="https://github.com/owner/plugin-repo" />
+          <div class="confirm-box__actions" style="margin-top:16px;">
+            <button class="btn btn--ghost" id="custom-cancel-btn">Cancel</button>
+            <button class="btn btn--success" id="custom-submit-btn">Install</button>
+          </div>
+        </div>`;
+    }
+
+    return `
+      <button class="detail-panel__back" id="custom-back-btn">&#8592; Back to App Market</button>
+      <div class="detail-header">
+        <div class="detail-header__icon">&#10133;</div>
+        <div class="detail-header__info">
+          <div class="detail-header__name">Install Custom Plugin</div>
+          <div class="detail-header__meta">Install any OpenClaw plugin from a GitHub URL</div>
+        </div>
+      </div>
+      ${contentHtml}`;
+  }
+
+  function bindCustomInstallEvents() {
+    const backBtn = document.getElementById("custom-back-btn");
+    if (backBtn) backBtn.addEventListener("click", backFromCustomInstall);
+
+    const errorBackBtn = document.getElementById("custom-error-back-btn");
+    if (errorBackBtn) errorBackBtn.addEventListener("click", backFromCustomInstall);
+
+    const cancelBtn = document.getElementById("custom-cancel-btn");
+    if (cancelBtn) cancelBtn.addEventListener("click", backFromCustomInstall);
+
+    const submitBtn = document.getElementById("custom-submit-btn");
+    if (submitBtn) {
+      submitBtn.addEventListener("click", () => {
+        const input = document.getElementById("github-url-input");
+        if (input && input.value.trim()) {
+          submitCustomInstall(input.value);
+        }
+      });
+    }
+
+    const doneBtn = document.getElementById("custom-done-btn");
+    if (doneBtn) {
+      doneBtn.addEventListener("click", () => {
+        state.installJob = null;
+        backFromCustomInstall();
+        fetchPlugins();
+      });
+    }
+
+    // Allow Enter key in input
+    const urlInput = document.getElementById("github-url-input");
+    if (urlInput) {
+      urlInput.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" && urlInput.value.trim()) {
+          submitCustomInstall(urlInput.value);
+        }
+      });
+    }
   }
 
   // ── Event binding ─────────────────────────────────────────────
@@ -622,6 +961,10 @@
       });
     });
 
+    // Custom install (+) button
+    const customBtn = document.getElementById("custom-install-btn");
+    if (customBtn) customBtn.addEventListener("click", showCustomInstall);
+
     // Retry
     const retryBtn = document.getElementById("retry-btn");
     if (retryBtn) retryBtn.addEventListener("click", fetchPlugins);
@@ -634,6 +977,16 @@
     const installBtn = document.getElementById("install-btn");
     if (installBtn) {
       installBtn.addEventListener("click", () => requestInstall(state.selectedPlugin));
+    }
+
+    const uninstallBtn = document.getElementById("uninstall-btn");
+    if (uninstallBtn) {
+      uninstallBtn.addEventListener("click", () => requestUninstall(state.selectedPlugin));
+    }
+
+    const confirmUninstallBtn = document.getElementById("confirm-uninstall-btn");
+    if (confirmUninstallBtn) {
+      confirmUninstallBtn.addEventListener("click", () => confirmUninstall(state.selectedPlugin));
     }
 
     const cancelBtn = document.getElementById("cancel-install-btn");
@@ -662,7 +1015,7 @@
       stopInstallPoll();
     } else {
       // Resume polling if an install is in progress
-      if (state.installJob && state.installJob.jobId && state.installJob.status === "installing") {
+      if (state.installJob && state.installJob.jobId && (state.installJob.status === "installing" || state.installJob.status === "uninstalling")) {
         startInstallPoll(state.installJob.jobId);
       }
     }
