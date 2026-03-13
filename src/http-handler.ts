@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { browsePlugins, getInstalledPluginIds, type BrowseOptions } from "./marketplace-store.js";
+import { browsePlugins, getTrendingPlugins, getInstalledPluginIds, type BrowseOptions } from "./marketplace-store.js";
 import {
   startInstall,
   getJobStatus,
@@ -39,6 +39,7 @@ const PREFIX = "/plugins/openclaw-appstore";
  *   - ?_api=install   → JSON install response (POST)
  *   - ?_api=status&jobId=xxx → JSON status response
  *   - ?_api=installed → JSON installed list
+ *   - ?_api=trending  → JSON trending top 10
  */
 export function createHttpHandler(params: HttpHandlerParams) {
   const { logger, uiRoot, pluginRoot, registryUrl, cacheTtl, pluginApi } = params;
@@ -100,6 +101,9 @@ export function createHttpHandler(params: HttpHandlerParams) {
     if (apiAction === "installed" && req.method === "GET") {
       return handleInstalled(res);
     }
+    if (apiAction === "trending" && req.method === "GET") {
+      return handleTrending(res, logger, registryUrl, bundledRegistryPath);
+    }
 
     // ── HTML bundle ──────────────────────────────────────────
     const now = Date.now();
@@ -139,6 +143,7 @@ async function handleBrowse(
       search: url.searchParams.get("search") || undefined,
       category: url.searchParams.get("category") || undefined,
       sort: (url.searchParams.get("sort") as "stars" | "updated") || "stars",
+      source: (url.searchParams.get("source") as "all" | "curated" | "community") || "all",
       registryUrl,
       cacheTtl,
       bundledRegistryPath,
@@ -206,6 +211,22 @@ function handleStatus(res: ServerResponse, jobId: string): boolean {
     error: job.error,
     message: job.message,
   });
+  return true;
+}
+
+async function handleTrending(
+  res: ServerResponse,
+  logger?: PluginLogger,
+  registryUrl?: string,
+  bundledRegistryPath?: string,
+): Promise<boolean> {
+  try {
+    const trending = await getTrendingPlugins(logger, registryUrl, bundledRegistryPath);
+    sendJson(res, 200, { trending });
+  } catch (err) {
+    logger?.error?.(`[appstore] Trending error: ${err}`);
+    sendJson(res, 500, { error: "Failed to fetch trending plugins" });
+  }
   return true;
 }
 

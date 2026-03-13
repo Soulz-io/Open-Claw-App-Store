@@ -480,3 +480,188 @@ body {
   gap: 4px;
 }
 .stats-row__value { color: var(--text); font-weight: 600; }
+
+/* ── Source badges ────────────────────────────────────────────── */
+.source-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 8px;
+  border-radius: 9999px;
+  font-size: 0.68rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.source-badge--curated {
+  background: rgba(52,211,153,0.12);
+  color: var(--green);
+}
+.source-badge--community {
+  background: rgba(96,165,250,0.12);
+  color: var(--blue);
+}
+
+/* ── Community card variant ──────────────────────────────────── */
+.plugin-card--community {
+  border-style: dashed;
+  border-color: var(--border);
+}
+.plugin-card--community:hover {
+  border-color: var(--blue);
+}
+
+/* ── Community warning box (detail) ──────────────────────────── */
+.community-warning {
+  background: rgba(251,191,36,0.08);
+  border: 1px solid rgba(251,191,36,0.25);
+  border-radius: 8px;
+  padding: 12px 16px;
+  margin-bottom: 16px;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  font-size: 0.82rem;
+  color: var(--yellow);
+  line-height: 1.5;
+}
+.community-warning__icon {
+  font-size: 1.1rem;
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+.community-warning__text {
+  color: var(--text-dim);
+}
+
+/* ── Source filter pills ─────────────────────────────────────── */
+.source-filters {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* ── Trending section ────────────────────────────────────────── */
+.trending-section {
+  margin-bottom: 24px;
+}
+.trending-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  font-size: 1rem;
+  font-weight: 600;
+}
+.trending-header__icon {
+  font-size: 1.2rem;
+}
+.trending-header__count {
+  font-size: 0.78rem;
+  color: var(--text-dim);
+  font-weight: 400;
+}
+.trending-scroll {
+  display: flex;
+  gap: 12px;
+  overflow-x: auto;
+  padding-bottom: 8px;
+  scroll-snap-type: x mandatory;
+  -webkit-overflow-scrolling: touch;
+}
+.trending-scroll::-webkit-scrollbar {
+  height: 4px;
+}
+.trending-scroll::-webkit-scrollbar-track {
+  background: var(--bg-card);
+  border-radius: 2px;
+}
+.trending-scroll::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 2px;
+}
+
+.trending-card {
+  flex: 0 0 220px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px;
+  cursor: pointer;
+  transition: border-color 0.15s, transform 0.1s;
+  scroll-snap-align: start;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.trending-card:hover {
+  border-color: var(--accent);
+  transform: translateY(-1px);
+}
+.trending-card__rank {
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: var(--accent);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.trending-card__icon-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.trending-card__icon {
+  font-size: 1.4rem;
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg);
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.trending-card__name {
+  font-size: 0.85rem;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.trending-card__desc {
+  font-size: 0.75rem;
+  color: var(--text-dim);
+  line-height: 1.35;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  flex: 1;
+}
+.trending-card__meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 0.72rem;
+  margin-top: auto;
+}
+.trending-card__stars {
+  color: var(--yellow);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Trending skeleton ───────────────────────────────────────── */
+.trending-skeleton {
+  display: flex;
+  gap: 12px;
+  overflow: hidden;
+}
+.trending-skeleton-card {
+  flex: 0 0 220px;
+  height: 130px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  animation: pulse-skeleton 1.5s ease-in-out infinite;
+}

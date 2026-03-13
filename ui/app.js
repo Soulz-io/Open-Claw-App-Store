@@ -21,9 +21,12 @@
   let state = {
     view: "grid",           // "grid" | "detail"
     plugins: [],
+    trending: [],
+    trendingLoading: true,
     search: "",
     category: "all",
     sort: "stars",
+    source: "all",          // "all" | "curated" | "community"
     selectedPlugin: null,
     installJob: null,       // { jobId, pluginId, status, error?, message? }
     loading: true,
@@ -37,6 +40,7 @@
   // ── Init ──────────────────────────────────────────────────────
   document.addEventListener("DOMContentLoaded", () => {
     fetchPlugins();
+    fetchTrending();
     syncTheme();
   });
 
@@ -74,6 +78,7 @@
       const params = new URLSearchParams({ sort: state.sort });
       if (state.search) params.set("search", state.search);
       if (state.category !== "all") params.set("category", state.category);
+      if (state.source !== "all") params.set("source", state.source);
 
       params.set("_api", "browse");
       const res = await fetch(`${API_BASE}?${params}`, { signal });
@@ -87,6 +92,20 @@
     }
 
     state.loading = false;
+    render();
+  }
+
+  async function fetchTrending() {
+    state.trendingLoading = true;
+    try {
+      const res = await fetch(`${API_BASE}?_api=trending`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      state.trending = data.trending || [];
+    } catch {
+      state.trending = [];
+    }
+    state.trendingLoading = false;
     render();
   }
 
@@ -220,6 +239,11 @@
     fetchPlugins();
   }
 
+  function setSource(src) {
+    state.source = src;
+    fetchPlugins();
+  }
+
   // ── HTML helpers ──────────────────────────────────────────────
   function esc(str) {
     const d = document.createElement("div");
@@ -284,6 +308,45 @@
         `<button class="filter-pill ${state.category === c.id ? "filter-pill--active" : ""}" data-cat="${esc(c.id)}">${esc(c.label)}</button>`,
     ).join("");
 
+    // Source filter pills
+    const sourceFilters = [
+      { id: "all", label: "All Sources" },
+      { id: "curated", label: "\u2713 Curated" },
+      { id: "community", label: "Community" },
+    ];
+    const sourceHtml = sourceFilters.map(
+      (s) =>
+        `<button class="filter-pill ${state.source === s.id ? "filter-pill--active" : ""}" data-source="${esc(s.id)}">${esc(s.label)}</button>`,
+    ).join("");
+
+    // Trending section (only show when no search/category/source filter active)
+    const showTrending = !state.search && state.category === "all" && state.source === "all";
+    let trendingHtml = "";
+    if (showTrending) {
+      if (state.trendingLoading) {
+        trendingHtml = `
+          <div class="trending-section">
+            <div class="trending-header">
+              <span class="trending-header__icon">\uD83D\uDD25</span> Trending Now
+            </div>
+            <div class="trending-skeleton">
+              ${Array(5).fill('<div class="trending-skeleton-card"></div>').join("")}
+            </div>
+          </div>`;
+      } else if (state.trending.length > 0) {
+        trendingHtml = `
+          <div class="trending-section">
+            <div class="trending-header">
+              <span class="trending-header__icon">\uD83D\uDD25</span> Trending Now
+              <span class="trending-header__count">\u2022 Top ${state.trending.length} active in 24h</span>
+            </div>
+            <div class="trending-scroll">
+              ${state.trending.map((p, i) => renderTrendingCard(p, i + 1)).join("")}
+            </div>
+          </div>`;
+      }
+    }
+
     let contentHtml;
     if (state.loading) {
       contentHtml = `<div class="skeleton-grid">
@@ -303,11 +366,15 @@
       </div>`;
     } else {
       const total = state.plugins.length;
+      const curated = state.plugins.filter((p) => p.source === "curated").length;
+      const community = state.plugins.filter((p) => p.source === "community").length;
       const installed = state.plugins.filter((p) => p.installed).length;
 
       contentHtml = `
         <div class="stats-row">
           <div class="stats-row__item"><span class="stats-row__value">${total}</span> plugins</div>
+          <div class="stats-row__item"><span class="stats-row__value">${curated}</span> curated</div>
+          <div class="stats-row__item"><span class="stats-row__value">${community}</span> community</div>
           <div class="stats-row__item"><span class="stats-row__value">${installed}</span> installed</div>
         </div>
         <div class="plugin-grid">
@@ -325,12 +392,35 @@
       <div class="filters">
         ${filtersHtml}
         <div class="filter-sep"></div>
+        <div class="source-filters">${sourceHtml}</div>
+        <div class="filter-sep"></div>
         <select class="sort-select" id="sort-select">
           <option value="stars" ${state.sort === "stars" ? "selected" : ""}>Most Stars</option>
           <option value="updated" ${state.sort === "updated" ? "selected" : ""}>Recently Updated</option>
         </select>
       </div>
+      ${trendingHtml}
       ${contentHtml}`;
+  }
+
+  function renderTrendingCard(plugin, rank) {
+    const sourceBadge = plugin.source === "curated"
+      ? `<span class="source-badge source-badge--curated">\u2713</span>`
+      : `<span class="source-badge source-badge--community">C</span>`;
+
+    return `
+      <div class="trending-card" data-trending-id="${esc(plugin.id)}">
+        <div class="trending-card__rank">#${rank} Trending</div>
+        <div class="trending-card__icon-row">
+          <div class="trending-card__icon">${esc(plugin.icon || "\ud83d\udce6")}</div>
+          <div class="trending-card__name">${esc(plugin.name)}</div>
+        </div>
+        <div class="trending-card__desc">${esc(plugin.description)}</div>
+        <div class="trending-card__meta">
+          <span class="trending-card__stars">&#9733; ${formatStars(plugin.stars)}</span>
+          ${sourceBadge}
+        </div>
+      </div>`;
   }
 
   function renderPluginCard(plugin) {
@@ -338,8 +428,14 @@
       ? `<span class="install-badge install-badge--installed">Installed</span>`
       : `<span class="install-badge install-badge--available">Available</span>`;
 
+    const sourceBadge = plugin.source === "curated"
+      ? `<span class="source-badge source-badge--curated">\u2713 Curated</span>`
+      : `<span class="source-badge source-badge--community">Community</span>`;
+
+    const communityClass = plugin.source === "community" ? "plugin-card--community" : "";
+
     return `
-      <div class="plugin-card ${plugin.featured ? "plugin-card--featured" : ""}" data-plugin-id="${esc(plugin.id)}">
+      <div class="plugin-card ${plugin.featured ? "plugin-card--featured" : ""} ${communityClass}" data-plugin-id="${esc(plugin.id)}">
         <div class="plugin-card__header">
           <div class="plugin-card__icon">${esc(plugin.icon || "\ud83d\udce6")}</div>
           <div class="plugin-card__info">
@@ -350,6 +446,7 @@
         <div class="plugin-card__desc">${esc(plugin.description)}</div>
         <div class="plugin-card__footer">
           <span class="plugin-card__stars">${plugin.stars ? "&#9733; " + formatStars(plugin.stars) : ""}</span>
+          ${sourceBadge}
           ${plugin.featured ? '<span class="featured-badge">Featured</span>' : ""}
           ${statusBadge}
         </div>
@@ -391,16 +488,30 @@
         </div>`;
     }
 
+    const sourceBadge = plugin.source === "curated"
+      ? '<span class="source-badge source-badge--curated">\u2713 Curated</span>'
+      : plugin.source === "community"
+        ? '<span class="source-badge source-badge--community">Community</span>'
+        : "";
+
+    const communityWarning = plugin.source === "community"
+      ? `<div class="community-warning">
+          <span class="community-warning__icon">\u26A0\uFE0F</span>
+          <span class="community-warning__text">This is a <strong>community plugin</strong> discovered on GitHub. It has not been verified by the OpenClaw team. Review the source code before installing.</span>
+        </div>`
+      : "";
+
     return `
       <button class="detail-panel__back" id="back-btn">&#8592; Back to App Market</button>
       <div class="detail-header">
         <div class="detail-header__icon">${esc(plugin.icon || "\ud83d\udce6")}</div>
         <div class="detail-header__info">
-          <div class="detail-header__name">${esc(plugin.name)}</div>
+          <div class="detail-header__name">${esc(plugin.name)} ${sourceBadge}</div>
           <div class="detail-header__meta">${metaParts.join(" &middot; ")}</div>
         </div>
         <div class="detail-header__stars">${plugin.stars ? "&#9733; " + formatStars(plugin.stars) : ""}</div>
       </div>
+      ${communityWarning}
       <div class="detail-desc">${esc(plugin.description)}</div>
       ${tagsHtml ? `<div class="detail-tags">${tagsHtml}</div>` : ""}
       <div class="detail-links">
@@ -490,10 +601,23 @@
       el.addEventListener("click", () => setCategory(el.dataset.cat));
     });
 
+    // Source filters
+    document.querySelectorAll("[data-source]").forEach((el) => {
+      el.addEventListener("click", () => setSource(el.dataset.source));
+    });
+
     // Plugin cards
     document.querySelectorAll("[data-plugin-id]").forEach((el) => {
       el.addEventListener("click", () => {
         const plugin = state.plugins.find((p) => p.id === el.dataset.pluginId);
+        if (plugin) selectPlugin(plugin);
+      });
+    });
+
+    // Trending cards
+    document.querySelectorAll("[data-trending-id]").forEach((el) => {
+      el.addEventListener("click", () => {
+        const plugin = state.trending.find((p) => p.id === el.dataset.trendingId);
         if (plugin) selectPlugin(plugin);
       });
     });
